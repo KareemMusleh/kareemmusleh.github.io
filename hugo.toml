@@ -18,6 +18,10 @@ category = "categories"
 tag = "tags"
 series = "series"
 
+[caches]
+[caches.images]
+dir = ':cacheDir/images'
+
 [params]
 
 subtitle = "Fancy subtitle."
