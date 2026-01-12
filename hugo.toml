@@ -1,0 +1,55 @@
+baseURL = 'https://kareemmusleh.github.io'
+languageCode = 'en-us'
+title = "Kareem's Blog"
+author = "Kareem Musleh"
+theme = 'tufte'
+canonifyurls = true
+paginate = 5
+
+[markup.goldmark.renderer]
+unsafe = true
+[markup.highlight]
+noClasses = false
+guessSyntax = true
+
+[taxonomies]
+category = "categories"
+tag = "tags"
+series = "series"
+
+[params]
+
+subtitle= "Fancy subtitle."
+# favicon = "./favicon.ico"
+# touchicon = "./touch-icon.png"
+codeblocksdark = false
+# Customize the indicator for margin notes
+# Some suggestions: ⊕, 💬, 💭, 📑, 🏷, ✍, 💡, 🧐, 📎, 📌
+marginNoteInd = "⊕"
+showPoweredBy = false
+hidedate = false
+# Site wide kill switch for post summary on home page
+showSummary = true
+# Site wide kill switch for LaTeX support
+math = true
+KaTeXVersion = "0.16.4"
+KaTeXCDN = "//cdn.jsdelivr.net/npm"
+
+sansSubtitle = false
+centerArticle = false
+# ######## Common social website links, please comment the unused ones.
+# (if your favorite one is not in the list, please head to the footer menu below and add an entry)
+# Please note that some of the value below are only provided as an exemple, perhaps the computed isn't valid
+github = "KareemMusleh"
+# gitlab: slashformotion
+# linkedin: <insert_here>
+twitter = "Kareem_Musleh"
+# patreon: ''
+# youtube: user/ChromeDevelopers # check the end of your youtube url https://www.youtube.com/<copy_this>
+# medium: slashformotion
+# reddit: Slashformotion
+# stackoverflow: 16609732/slashformotion
+# instagram: google
+# mastodon: instance.url/@username
+# orcid: 0000-0003-0634-3275
+# google_scholar: jm5QaHkAAAAJ

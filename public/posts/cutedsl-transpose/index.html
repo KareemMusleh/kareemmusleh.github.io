@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en-us"><head><script src="/livereload.js?mindelay=10&amp;v=2&amp;port=1313&amp;path=livereload" data-no-instant defer></script>
+<title>Cute DSL Transpose - Kareem&#39;s Blog</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description"
+    content="If the description field is not empty, its contents will show in the home page instead of the first 140 characters of the post. ">
+<link rel="canonical" href="http://localhost:1313/posts/cutedsl-transpose/" />
+
+
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/modern-normalize/1.1.0/modern-normalize.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+
+
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css?family=Noto+Serif+SC|Noto+Emoji&display=swap" />
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css?family=Noto+Serif+SC|Noto+Emoji&display=swap"
+      media="print" onload="this.media='all'" />
+<noscript>
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css?family=Noto+Serif+SC&display=swap" />
+</noscript>
+
+
+
+<link rel="stylesheet" href="http://localhost:1313/css/hugo-tufte.min.css">
+
+
+
+<link rel="stylesheet" href="http://localhost:1313/css/hugo-tufte-options.min.css">
+
+<link rel="stylesheet" href="http://localhost:1313/css/hugo-tufte-override.css">
+
+</head>
+<body>
+
+
+<article id="main">
+  <section>
+<h1 class="content-title">Cute DSL Transpose</h1><span class="content-meta"><p class="date">2026-01-11</p></span></section>
+
+  
+
+  <section><h2 id="introduction">
+Introduction
+<a href="#introduction" class="heading-anchor">#</a>
+</h2>
+<p><a href="https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/cute_dsl.html">CuteDSL</a> is a new library that was release by Nvidia that allows us to write Cute-like kernels directly in Python. A kernel in CuteDSL is a function that is wrapped in <code>@cute.kernel</code> and launched from a how function wrapped in <code>@cute.jit</code>.</p>
+<p>Transpose is a memory-bound operation that lends itself as a great introduction to CuteDSL because it needs a bunch of optimizations to make it fast.</p>
+<p>I&rsquo;ll be assuming basic familiarity with how GPUs work.</p>
+<h2 id="getting-the-baseline">
+Getting The Baseline
+<a href="#getting-the-baseline" class="heading-anchor">#</a>
+</h2>
+<p>Before starting it&rsquo;s always a good idea to define a target for our kernel&rsquo;s bandwidth.</p>
+<p>Because I&rsquo;m using an H100 GPU the peak bandwidth is <code>3.35 TB/s</code>. But achieving 100% throughput is practically impossible, so we&rsquo;ll have to settle for a more realistic baseline. Using <code>torch.compile</code><label for="sidenote-1" class="margin-toggle sidenote-number">(1)</label>
+<input type="checkbox" id="sidenote-1" class="margin-toggle"/>
+<span class="sidenote">
+<span class="sidenote-number">(1)</span>Using <code>x.T.contiguous()</code> without <code>torch.compile</code>, results in a bandwidth of <code>~350 GB/s</code>!
+</span>
+ we can achieve a bandwidth of <code>~2.950TB/s</code>. Our job will be to write a faster kernel.</p>
+<h2 id="naive-implementation">
+Naive Implementation
+<a href="#naive-implementation" class="heading-anchor">#</a>
+</h2>
+<p>The simplest implementation of transpose is for every thread to read an element from the input tensor and write it to the output tensor.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-python" data-lang="python"><span class="line"><span class="cl"><span class="k">class</span> <span class="nc">NaiveTranspose</span><span class="p">:</span>
+</span></span><span class="line"><span class="cl">    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">/</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">4</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">M</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">N</span> <span class="o">=</span> <span class="n">shape</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">num_warps</span> <span class="o">=</span> <span class="n">num_warps</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nd">@cute.jit</span>
+</span></span><span class="line"><span class="cl">    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mX</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mX_T</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="p">):</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads_per_block</span> <span class="o">=</span> <span class="mi">32</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_warps</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">kernel</span><span class="p">(</span><span class="n">mX</span><span class="p">,</span> <span class="n">mX_T</span><span class="p">)</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">grid</span><span class="o">=</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">M</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">N</span> <span class="o">//</span> <span class="n">threads_per_block</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">block</span><span class="o">=</span><span class="p">(</span><span class="n">threads_per_block</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">        <span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nd">@cute.kernel</span>
+</span></span><span class="line"><span class="cl">    <span class="k">def</span> <span class="nf">kernel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mX</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mX_T</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="p">):</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tidx</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">arch</span><span class="o">.</span><span class="n">thread_idx</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">        <span class="n">bidx</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">arch</span><span class="o">.</span><span class="n">block_idx</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">        <span class="n">bdim</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">arch</span><span class="o">.</span><span class="n">block_dim</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">thread_idx</span> <span class="o">=</span> <span class="n">bidx</span> <span class="o">*</span> <span class="n">bdim</span> <span class="o">+</span> <span class="n">tidx</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">n</span> <span class="o">=</span> <span class="n">mX</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">        <span class="n">ni</span> <span class="o">=</span> <span class="n">thread_idx</span> <span class="o">%</span> <span class="n">n</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mi</span> <span class="o">=</span> <span class="n">thread_idx</span> <span class="o">//</span> <span class="n">n</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mX_T</span><span class="p">[</span><span class="n">ni</span><span class="p">,</span> <span class="n">mi</span><span class="p">]</span> <span class="o">=</span> <span class="n">mX</span><span class="p">[</span><span class="n">mi</span><span class="p">,</span> <span class="n">ni</span><span class="p">]</span>
+</span></span></code></pre></div><p>This kernel has a bandwidth of <code>~200 GB/s</code>, which is around 15 times slower than our desired kernel. We can do better.</p>
+<h2 id="adding-coalesced-memory-access">
+Adding Coalesced Memory Access
+<a href="#adding-coalesced-memory-access" class="heading-anchor">#</a>
+</h2>
+<p>The problem with the above code is twofold.</p>
+<p>First, it stores a single float32 into a global memory which results in the following PTX <code>st.global.f32</code>. However we can instead store 4 float32s into a thread with a single instruction <code>st.global.v4.f32</code>. Doing this decreases the number of thread blocks launched by 4.</p>
+<h3 id="coalesced-writes-not-reads">
+Coalesced Writes Not Reads
+<a href="#coalesced-writes-not-reads" class="heading-anchor">#</a>
+</h3>
+<p>and this applies to both global memory reads and writes.</p>
+<p>Writing to global memory is always slower than reading, because when reading we can rely on caches.</p>
+<h3 id="tvlayout">
+TVLayout
+<a href="#tvlayout" class="heading-anchor">#</a>
+</h3>
+<p>In order to implement our desired access pattern for a thread or for a thread block, we&rsquo;ll have to use a <em>Thread-Value Layout</em>, which consists of two layouts.</p>
+<p>A <em>Value Layout</em> determines the shape of the sub-tensor that a single thread accesses. For example a</p>
+<p>A <em>Thread Layout</em> determines the shape of the sub-tensor that a single thread accesses. For example a</p>
+<p>if we have a Value layout with <code>v_rows</code> and <code>v_cols</code>, and a Thread layout with <code>t_rows</code> and <code>t_cols</code>. The number of rows and columns that the tensor has, has to be divisible by <code>t_rows * v_rows</code> and <code>t_cols * t_cols</code> respectively. This limitation must to be taken into account when writing kernels in the real world.</p>
+<h3 id="question">
+Question
+<a href="#question" class="heading-anchor">#</a>
+</h3>
+<p>for more information on TVLayouts, see the <a href="">CuteDSL documentation</a>.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-fallback" data-lang="fallback"><span class="line"><span class="cl">Which of the following layouts is the fastest?
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">1. `thr_layout = cute.make_ordered_layout((threads_per_block, 1), order=(1, 0))`
+</span></span><span class="line"><span class="cl">2. `val_layout = cute.make_ordered_layout((1, self.elem_per_thread), order=(1, 0))`
+</span></span><span class="line"><span class="cl">3. `thr_layout = cute.make_ordered_layout((1, threads_per_block), order=(1, 0))`
+</span></span><span class="line"><span class="cl">4. `val_layout = cute.make_ordered_layout((self.elem_per_thread, 1), order=(1, 0))`
+</span></span></code></pre></div><h3 id="implementation">
+Implementation
+<a href="#implementation" class="heading-anchor">#</a>
+</h3>
+<p>Putting the above all together.</p>
+<div class="highlight"><pre tabindex="0" class="chroma"><code class="language-python" data-lang="python"><span class="line"><span class="cl"><span class="k">class</span> <span class="nc">CoalescedTranspose</span><span class="p">:</span>
+</span></span><span class="line"><span class="cl">    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">/</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">num_warps</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">elem_per_thread</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">t_cols</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">v_rows</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">v_cols</span><span class="o">=</span><span class="mi">4</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">M</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">N</span> <span class="o">=</span> <span class="n">shape</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">num_warps</span> <span class="o">=</span> <span class="n">num_warps</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">t_cols</span> <span class="o">=</span> <span class="n">t_cols</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">v_rows</span> <span class="o">=</span> <span class="n">v_rows</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">v_cols</span><span class="o">=</span> <span class="n">v_cols</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nd">@cute.jit</span>
+</span></span><span class="line"><span class="cl">    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mX</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">mX_T</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+</span></span><span class="line"><span class="cl">        <span class="n">threads_per_block</span> <span class="o">=</span> <span class="mi">32</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_warps</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mX_T_colmajor_layout</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">make_layout</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">M</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">N</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="n">mX_T</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">make_tensor</span><span class="p">(</span><span class="n">mX_T</span><span class="o">.</span><span class="n">iterator</span><span class="p">,</span> <span class="n">mX_T_colmajor_layout</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">thr_layout</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">make_ordered_layout</span><span class="p">((</span><span class="n">threads_per_block</span> <span class="o">//</span> <span class="bp">self</span><span class="o">.</span><span class="n">t_cols</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">t_cols</span><span class="p">),</span> <span class="n">order</span><span class="o">=</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">        <span class="n">val_layout</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">make_ordered_layout</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">v_rows</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">v_cols</span><span class="p">),</span> <span class="n">order</span><span class="o">=</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">tiler_mn</span><span class="p">,</span> <span class="n">tv_layout</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">make_layout_tv</span><span class="p">(</span><span class="n">thr_layout</span><span class="p">,</span> <span class="n">val_layout</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">gX</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">zipped_divide</span><span class="p">(</span><span class="n">mX</span><span class="p">,</span> <span class="n">tiler_mn</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="n">gX_T</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">zipped_divide</span><span class="p">(</span><span class="n">mX_T</span><span class="p">,</span> <span class="n">tiler_mn</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="o">.</span><span class="n">kernel</span><span class="p">(</span><span class="n">gX</span><span class="p">,</span> <span class="n">gX_T</span><span class="p">,</span> <span class="n">tv_layout</span><span class="p">)</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">            <span class="n">grid</span><span class="o">=</span><span class="p">(</span><span class="n">cute</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="n">gX</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">            <span class="n">block</span><span class="o">=</span><span class="p">(</span><span class="n">cute</span><span class="o">.</span><span class="n">size</span><span class="p">(</span><span class="n">tv_layout</span><span class="p">,</span> <span class="n">mode</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+</span></span><span class="line"><span class="cl">        <span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">    <span class="nd">@cute.kernel</span>
+</span></span><span class="line"><span class="cl">    <span class="k">def</span> <span class="nf">kernel</span><span class="p">(</span>
+</span></span><span class="line"><span class="cl">        <span class="bp">self</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">gX</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">gX_T</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tv_layout</span><span class="p">:</span> <span class="n">cute</span><span class="o">.</span><span class="n">Layout</span><span class="p">,</span>
+</span></span><span class="line"><span class="cl">    <span class="p">):</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tidx</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">arch</span><span class="o">.</span><span class="n">thread_idx</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">        <span class="n">bidx</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">arch</span><span class="o">.</span><span class="n">block_idx</span><span class="p">()</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">blk_coord</span> <span class="o">=</span> <span class="p">((</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">),</span> <span class="n">bidx</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">blkX</span> <span class="o">=</span> <span class="n">gX</span><span class="p">[</span><span class="n">blk_coord</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">        <span class="n">blkX_T</span> <span class="o">=</span> <span class="n">gX_T</span><span class="p">[</span><span class="n">blk_coord</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">tidfrgX</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">composition</span><span class="p">(</span><span class="n">blkX</span><span class="p">,</span> <span class="n">tv_layout</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">        <span class="n">tidfrgX_T</span> <span class="o">=</span> <span class="n">cute</span><span class="o">.</span><span class="n">composition</span><span class="p">(</span><span class="n">blkX_T</span><span class="p">,</span> <span class="n">tv_layout</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">thr_coord</span> <span class="o">=</span> <span class="p">(</span><span class="n">tidx</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">valX</span> <span class="o">=</span> <span class="n">tidfrgX</span><span class="p">[</span><span class="n">thr_coord</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">        <span class="n">valX_T</span> <span class="o">=</span> <span class="n">tidfrgX_T</span><span class="p">[</span><span class="n">thr_coord</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl">
+</span></span><span class="line"><span class="cl">        <span class="n">valX_T</span><span class="p">[</span><span class="kc">None</span><span class="p">]</span> <span class="o">=</span> <span class="n">valX</span><span class="p">[</span><span class="kc">None</span><span class="p">]</span><span class="o">.</span><span class="n">load</span><span class="p">()</span>
+</span></span></code></pre></div><p>After autotuning, we can reach a bandwidth of <code>~2900 GB/s</code>, which is only <code>2%</code> slower than our target!</p>
+<h2 id="making-the-reads-coalesced-as-well">
+Making The Reads Coalesced As Well
+<a href="#making-the-reads-coalesced-as-well" class="heading-anchor">#</a>
+</h2>
+<p>The above</p>
+</section>
+  <section><footer class="page-footer">
+<hr />
+
+<div class="previous-post" style="display:inline-block;">
+  
+</div>
+
+<div class="next-post", style="display:inline-block;float:right;">
+  
+</div>
+
+<ul class="page-footer-menu">
+  
+  
+  <li><a href="https://twitter.com/Kareem_Musleh">Twitter</a></li>
+  
+  
+  
+
+  
+  <li><a href="https://github.com/KareemMusleh">GitHub</a></li>
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+  
+  
+</ul>
+
+
+
+
+
+</footer>
+</section>
+  <section><nav class="menu">
+    <ul>
+    
+    </ul>
+</nav>
+</section>
+</article>
+
+
+
+
+
+</body>
+
+</html>
