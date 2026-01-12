@@ -60,14 +60,14 @@ jobs:
       - name: Configure Git
         run: |
           git config core.quotepath false
-      - name: Cache restore
-        id: cache-restore
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ runner.temp }}/hugo_cache
-          key: hugo-${{ github.run_id }}
-          restore-keys:
-            hugo-
+      # - name: Cache restore
+      #   id: cache-restore
+      #   uses: actions/cache/restore@v5
+      #   with:
+      #     path: ${{ runner.temp }}/hugo_cache
+      #     key: hugo-${{ github.run_id }}
+      #     restore-keys:
+      #       hugo-
       - name: Build the site
         run: |
           hugo \
