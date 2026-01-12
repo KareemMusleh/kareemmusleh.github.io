@@ -3,7 +3,8 @@ languageCode = 'en-us'
 title = "Kareem's Blog"
 author = "Kareem Musleh"
 theme = 'tufte'
-canonifyurls = true
+relativeURLs = false
+canonifyURLs = true
 paginate = 5
 
 [markup.goldmark.renderer]
@@ -19,15 +20,15 @@ series = "series"
 
 [params]
 
-subtitle= "Fancy subtitle."
+subtitle = "Fancy subtitle."
 # favicon = "./favicon.ico"
 # touchicon = "./touch-icon.png"
-codeblocksdark = false
+codeBlocksDark = false
 # Customize the indicator for margin notes
 # Some suggestions: ⊕, 💬, 💭, 📑, 🏷, ✍, 💡, 🧐, 📎, 📌
 marginNoteInd = "⊕"
 showPoweredBy = false
-hidedate = false
+hideDate = false
 # Site wide kill switch for post summary on home page
 showSummary = true
 # Site wide kill switch for LaTeX support
