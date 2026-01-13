@@ -11,23 +11,21 @@ meta = true
 # toc: true
 # hideDate: true
 hideReadTime = true
-description = "If the description field is not empty, its contents will show in the home page instead of the first 140 characters of the post."
+description = "Implementing A Fast Transpose Using CuteDSL"
 
 +++
 
 ## Introduction
 
-[CuteDSL](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/cute_dsl.html) is a new library that was release by Nvidia that allows us to write Cute-like kernels directly in Python. A kernel in CuteDSL is a function that is wrapped in `@cute.kernel` and launched from a how function wrapped in `@cute.jit`.
+[CuteDSL](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/cute_dsl.html) is a new library that was release by Nvidia that allows us to write Cute-like kernels directly in Python. A kernel in CuteDSL is a function that is wrapped in `@cute.kernel` and launched from a host function wrapped in `@cute.jit`.
 
 Transpose is a memory-bound operation that lends itself as a great introduction to CuteDSL because it needs a bunch of optimizations to make it fast.
 
-I'll be assuming basic familiarity with how GPUs work.
+I'll be assuming basic familiarity with Cuda and how GPUs work.
 
 ## Getting The Baseline
 
-Before starting it's always a good idea to define a target for our kernel's bandwidth.
-
-Because I'm using an H100 GPU the peak bandwidth is `3.35 TB/s`. But achieving 100% throughput is practically impossible, so we'll have to settle for a more realistic baseline. Using `torch.compile`{{< sidenote >}}Using `x.T.contiguous()` without `torch.compile`, results in a bandwidth of `~350 GB/s`!{{< /sidenote >}} we can achieve a bandwidth of `~2.950TB/s`. Our job will be to write a faster kernel.
+Before starting it's always a good idea to define a target for our kernel's bandwidth {{< sidenote >}}Bandwidth is our target metric rather than FLOPs, because we are memory-bound{{< /sidenote >}}. Because I'm using an H100 GPU the peak bandwidth is `3.35 TB/s`. But achieving 100% throughput is practically impossible, so we'll have to settle for a more realistic baseline. Using `torch.compile`{{< sidenote >}}Using `x.T.contiguous()` without `torch.compile`, results in a bandwidth of **~350 GB/s**!{{< /sidenote >}} we can achieve a bandwidth of **~2.950TB/s**. Our job will be to write a faster kernel.
 
 ## Naive Implementation
 
@@ -97,6 +95,7 @@ if we have a Value layout with `v_rows` and `v_cols`, and a Thread layout with `
 ### Question
 
 for more information on TVLayouts, see the [CuteDSL documentation]().
+
 ```question
 Which of the following layouts is the fastest?
 
@@ -165,9 +164,8 @@ class CoalescedTranspose:
         valX_T[None] = valX[None].load()
 ```
 
-After autotuning, we can reach a bandwidth of `~2900 GB/s`, which is only `2%` slower than our target!
+After autotuning, we can reach a bandwidth of **~2900 GB/s**, which is only **2%** slower than our target!
 
 ## Making The Reads Coalesced As Well
-
 
 The above
